@@ -1,0 +1,30 @@
+{
+  "name": "eatcloud-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "WhatsApp chatbot for EatCloud donation platform",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "Vignesh Viswanathan",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "axios": "^1.13.1",
+    "body-parser": "^2.2.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "redis": "^4.6.0",
+    "twilio": "^5.10.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "eslint": "^9.38.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.4.0",
+    "nodemon": "^3.1.10",
+    "prettier": "^3.6.2"
+  }
+}

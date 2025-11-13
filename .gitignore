@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment variables (NEVER COMMIT THESE!)
+.env
+.env.local
+.env.*.local
+
+# Test and backup files (local only)
+backup.js
+test-bot.js
+test-bot-copy.js
+eslint.config.mjs
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+logs/
+*.log
+
+# Docker volumes
+redis-data/
+
+# Temporary files
+tmp/
+temp/
+
+# Production builds
+dist/
+build/
+
+# Testing
+coverage/
+.nyc_output/
