@@ -7,7 +7,14 @@
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-  "keywords": [],
+  "keywords": [
+    "whatsapp",
+    "twilio",
+    "chatbot",
+    "food-donation",
+    "bilingual",
+    "i18n"
+  ],
   "author": "Vignesh Viswanathan",
   "license": "ISC",
   "type": "commonjs",
