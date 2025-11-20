@@ -4,15 +4,14 @@ const bodyParser = require('body-parser');
 const axios = require('axios');
 const { MessagingResponse } = require('twilio').twiml;
 const redis = require('redis');
+const { detectLanguage, getMessages, matchesCommand } = require('./languages');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
 /* -------------------- Redis Client -------------------- */
-// Support both Railway's REDIS_URL and docker-compose REDIS_HOST/PORT
 let redisConfig;
 if (process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL) {
-  // Railway/Render format (connection string)
   redisConfig = {
     url: process.env.REDIS_PRIVATE_URL || process.env.REDIS_URL
   };
@@ -25,7 +24,6 @@ if (process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL) {
     }
   };
   
-  // Add password if provided (Railway Redis requires auth)
   if (process.env.REDIS_PASSWORD) {
     redisConfig.password = process.env.REDIS_PASSWORD;
   }
@@ -106,10 +104,6 @@ function isEmail(str) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str);
 }
 
-function welcomeText() {
-  return 'Welcome to EatCloud! Type "login" to sign in.';
-}
-
 function calculateMatchScore(productName, searchTerm) {
   const name = productName.toLowerCase();
   const term = searchTerm.toLowerCase();
@@ -139,56 +133,25 @@ function formatDonorList(donors) {
   return donors.map((d, i) => `${i + 1}. ${d.name}`).join('\n');
 }
 
-function getMainMenuText() {
-  return [
-    '=== MAIN MENU ===',
-    '',
-    '1. Make a Donation',
-    '2. Logout',
-    '',
-    'Reply with 1 or 2'
-  ].join('\n');
-}
-
-function getProductSearchPrompt() {
-  return [
-    'What product would you like to donate?',
-    '',
-    'Tip: Type part of the product name (e.g., "crema", "yogurt")'
-  ].join('\n');
-}
-
 function shouldShowProductReview(permissions) {
   return permissions.canEditCost || permissions.canEditWeight || permissions.canEditTax;
 }
 
-function getProductReviewMessage(product, permissions) {
-  let message = [
-    `Selected: ${product.name}`,
-    '',
-    '📦 Product Details:'
-  ];
+function getProductReviewDetails(product, permissions, lang) {
+  const details = [];
+  const msg = getMessages(lang);
   
   if (permissions.canEditCost) {
-    message.push(`• Cost per unit: $${product.unit_cost}`);
+    details.push(`• ${lang === 'es' ? 'Costo por unidad' : 'Cost per unit'}: $${product.unit_cost}`);
   }
   if (permissions.canEditWeight) {
-    message.push(`• Weight per unit: ${product.unit_weight_kg} kg`);
+    details.push(`• ${lang === 'es' ? 'Peso por unidad' : 'Weight per unit'}: ${product.unit_weight_kg} kg`);
   }
   if (permissions.canEditTax) {
-    message.push(`• VAT: ${product.vat_percentage}%`);
+    details.push(`• ${lang === 'es' ? 'IVA' : 'VAT'}: ${product.vat_percentage}%`);
   }
   
-  message.push('');
-  
-  if (shouldShowProductReview(permissions)) {
-    message.push('Type "edit" to modify these values.');
-    message.push('Type "ok" to use these values.');
-  } else {
-    message.push('Type "ok" to continue.');
-  }
-  
-  return message.join('\n');
+  return details;
 }
 
 /* -------------------- EatCloud API Functions -------------------- */
@@ -238,7 +201,7 @@ async function searchProductsForUser(token, codeCuaUser, searchTerm) {
             score: calculateMatchScore(p.name.toLowerCase(), originalTerm.toLowerCase())
           }))
           .sort((a, b) => b.score - a.score)
-          .slice(0, 5);
+          .slice(0, 10);
         
         return { success: true, matches: rankedMatches, searchedTerm: currentTerm };
       }
@@ -437,8 +400,18 @@ app.post('/whatsapp', async (req, res) => {
 
   let s = await getSession(from);
   const clicked = parseInteractiveReply(req);
+  
+  // Detect or retrieve language
+  let lang = s?.lang || 'en';
+  
+  // If no session or first interaction, detect language
+  if (!s || !s.lang) {
+    lang = detectLanguage(body);
+  }
+  
+  const msg = getMessages(lang);
 
-  console.log(`[${from}] Message: "${body}" | Step: ${s?.step || 'none'}`);
+  console.log(`[${from}] Message: "${body}" | Step: ${s?.step || 'none'} | Lang: ${lang}`);
 
   /* ---------- Handle old button clicks ---------- */
   if (clicked) {
@@ -446,57 +419,48 @@ app.post('/whatsapp', async (req, res) => {
       if (await inCooloff(from)) {
         return res.type('text/xml').send('<Response/>');
       }
-      return reply(welcomeText());
+      return reply(msg.welcome);
     }
     
-    if (clicked.includes('make_donation') || clicked.includes('make a donation')) {
-      return reply('Type "1" to make a donation.');
+    if (clicked.includes('make_donation') || clicked.includes('make a donation') || clicked.includes('donación')) {
+      return reply(msg.oldButtonClick);
     }
-    if (clicked.includes('logout')) {
+    if (clicked.includes('logout') || clicked.includes('salir')) {
       await clearSession(from);
       await setCooloff(from, 5000);
-      return reply('You have been logged out.\n' + welcomeText());
+      return reply(msg.logoutSuccess + '\n' + msg.welcome);
     }
-    return reply('Type "menu" to see options.');
+    return reply(msg.typeMenuPrompt);
   }
 
   /* ---------- Login command ---------- */
-  if (lower === 'login') {
-    await setSession(from, { step: 'await_email', attempts: 0 });
-    return reply('Please enter your registered email address.');
+  if (matchesCommand(lower, 'login', lang)) {
+    await setSession(from, { step: 'await_email', attempts: 0, lang });
+    return reply(msg.requestEmail);
   }
 
   /* ---------- Menu command ---------- */
-  if (lower === 'menu') {
+  if (matchesCommand(lower, 'menu', lang)) {
     if (s && s.step === 'authenticated') {
       await setSession(from, { step: 'authenticated_at_menu' });
-      return reply(getMainMenuText());
+      return reply(msg.mainMenu);
     }
-    return reply('You need to log in first to access the menu.\nType "login" to sign in.');
+    return reply(msg.needLoginForMenu);
   }
 
   /* ---------- First-time users ---------- */
   if (!s) {
-    await setSession(from, { step: 'idle' });
-    return reply(welcomeText());
+    await setSession(from, { step: 'idle', lang });
+    return reply(msg.welcome);
   }
 
   /* ---------- Collect email ---------- */
   if (s.step === 'await_email') {
     if (!isEmail(body)) {
-      return reply('That does not look like a valid email. Please re-enter your email address (e.g., name@example.com).');
+      return reply(msg.invalidEmail);
     }
     await setSession(from, { step: 'await_password', email: body, attempts: 0 });
-    return reply([
-      `Thanks. Now enter your password for ${maskEmail(body)}.`,
-      '',
-      'SECURITY REMINDER:',
-      'After sending your password, immediately:',
-      '• Long-press your password message',
-      '• Tap "Delete" -> "Delete for me"',
-      '',
-      'Your password is transmitted securely and never stored.'
-    ].join('\n'));
+    return reply(msg.requestPassword(maskEmail(body)));
   }
 
   /* ---------- Collect password + authenticate ---------- */
@@ -529,12 +493,9 @@ app.post('/whatsapp', async (req, res) => {
       });
 
       return reply([
-        'Login successful!',
-        `Welcome, ${maskEmail(s.email)}.`,
+        msg.loginSuccess(maskEmail(s.email)),
         '',
-        'Remember to delete your password message above!',
-        '',
-        getMainMenuText()
+        msg.mainMenu
       ].join('\n'));
 
     } catch (err) {
@@ -542,11 +503,11 @@ app.post('/whatsapp', async (req, res) => {
       
       if (attempts >= 3) {
         await clearSession(from);
-        return reply('Login failed 3 times. Session reset. Type "login" to try again.');
+        return reply(msg.loginFailedMax);
       }
       
       await setSession(from, { step: 'await_email', email: null });
-      return reply('Login failed. Let us try again.\nPlease re-enter your email address.');
+      return reply(msg.loginFailed);
     }
   }
 
@@ -556,7 +517,7 @@ app.post('/whatsapp', async (req, res) => {
     const donors = s.userDetails?.donorInfo?.donors;
     
     if (!donors || isNaN(selection) || selection < 1 || selection > donors.length) {
-      return reply(`Please enter a number between 1 and ${donors?.length || 0}.`);
+      return reply(msg.invalidDonorSelection(donors?.length || 0));
     }
     
     const selectedDonor = donors[selection - 1];
@@ -568,10 +529,9 @@ app.post('/whatsapp', async (req, res) => {
     });
     
     return reply([
-      `Selected: ${selectedDonor.name}`,
-      `Donation point: ${s.userDetails.selectedPodName}`,
+      msg.donorSelected(selectedDonor.name, s.userDetails.selectedPodName),
       '',
-      getProductSearchPrompt()
+      msg.productSearchPrompt
     ].join('\n'));
   }
 
@@ -580,7 +540,7 @@ app.post('/whatsapp', async (req, res) => {
     const searchTerm = body.toLowerCase().trim();
     
     if (searchTerm.length < 2) {
-      return reply('Please enter at least 2 characters to search for a product.');
+      return reply(msg.productSearchMinLength);
     }
     
     try {
@@ -589,24 +549,11 @@ app.post('/whatsapp', async (req, res) => {
       const result = await searchProductsForUser(s.token, s.userDetails.codeCuaUser, searchTerm);
       
       if (!result.success) {
-        return reply([
-          'No products found in your catalog.',
-          '',
-          'Type "menu" to go back or try another search term.'
-        ].join('\n'));
+        return reply(msg.searchError);
       }
       
       if (result.matches.length === 0) {
-        return reply([
-          `No products found matching "${body}".`,
-          '',
-          'Try:',
-          '• Using different keywords',
-          '• Checking spelling',
-          '• Using shorter search terms',
-          '',
-          'Or type "menu" to go back.'
-        ].join('\n'));
+        return reply(msg.productsNotFound(body));
       }
       
       await setSession(from, { 
@@ -618,22 +565,11 @@ app.post('/whatsapp', async (req, res) => {
         `${i + 1}. ${p.name}`
       ).join('\n');
       
-      return reply([
-        `Found ${result.matches.length} matching product${result.matches.length > 1 ? 's' : ''}:`,
-        '',
-        productList,
-        '',
-        'Reply with the number to select.',
-        'Or type a new search term to search again.'
-      ].join('\n'));
+      return reply(msg.productsFound(result.matches.length, productList));
       
     } catch (err) {
       console.error('Product search error:', err.message);
-      return reply([
-        'Error searching for products. Please try again.',
-        '',
-        'Type "menu" to go back or try another search term.'
-      ].join('\n'));
+      return reply(msg.searchError);
     }
   }
 
@@ -644,7 +580,7 @@ app.post('/whatsapp', async (req, res) => {
       const searchTerm = body.toLowerCase().trim();
       
       if (searchTerm.length < 2) {
-        return reply('Please enter at least 2 characters to search for a product.');
+        return reply(msg.productSearchMinLength);
       }
       
       try {
@@ -653,19 +589,11 @@ app.post('/whatsapp', async (req, res) => {
         const result = await searchProductsForUser(s.token, s.userDetails.codeCuaUser, searchTerm);
         
         if (!result.success) {
-          return reply([
-            'No products found in your catalog.',
-            '',
-            'Type "menu" to go back or try another search term.'
-          ].join('\n'));
+          return reply(msg.searchError);
         }
         
         if (result.matches.length === 0) {
-          return reply([
-            `No products found matching "${body}".`,
-            '',
-            'Try different keywords or type "menu" to go back.'
-          ].join('\n'));
+          return reply(msg.productsNotFound(body));
         }
         
         await setSession(from, { 
@@ -677,18 +605,11 @@ app.post('/whatsapp', async (req, res) => {
           `${i + 1}. ${p.name}`
         ).join('\n');
         
-        return reply([
-          `Found ${result.matches.length} matching product${result.matches.length > 1 ? 's' : ''}:`,
-          '',
-          productList,
-          '',
-          'Reply with the number to select.',
-          'Or type a new search term to search again.'
-        ].join('\n'));
+        return reply(msg.productsFound(result.matches.length, productList));
         
       } catch (err) {
         console.error('Product search error:', err.message);
-        return reply('Error searching for products. Please try again.');
+        return reply(msg.searchError);
       }
     }
     
@@ -696,7 +617,7 @@ app.post('/whatsapp', async (req, res) => {
     const matches = s.productMatches;
     
     if (!matches || selection < 1 || selection > matches.length) {
-      return reply(`Please enter a number between 1 and ${matches?.length || 0}, or type a new search term.`);
+      return reply(msg.invalidProductSelection(matches?.length || 0));
     }
     
     const selectedProduct = matches[selection - 1];
@@ -708,79 +629,51 @@ app.post('/whatsapp', async (req, res) => {
         step: 'donation_review_product_details'
       });
       
-      return reply(getProductReviewMessage(selectedProduct, permissions));
+      const details = getProductReviewDetails(selectedProduct, permissions, lang);
+      return reply(msg.productReview(selectedProduct.name, details, shouldShowProductReview(permissions)));
     } else {
       await setSession(from, { 
         selectedProduct,
         step: 'donation_quantity'
       });
       
-      return reply([
-        `Selected: ${selectedProduct.name}`,
-        '',
-        'How many units would you like to donate?',
-        '',
-        '(Enter a number)'
-      ].join('\n'));
+      return reply(msg.quantityPrompt(selectedProduct.name));
     }
   }
 
   /* ---------- Review Product Details ---------- */
   if (s.step === 'donation_review_product_details') {
-    if (lower === 'ok') {
+    if (matchesCommand(lower, 'ok', lang)) {
       await setSession(from, { step: 'donation_quantity' });
-      
-      return reply([
-        'How many units would you like to donate?',
-        '',
-        '(Enter a number)'
-      ].join('\n'));
+      return reply(msg.quantityPromptSimple);
     }
     
-    if (lower === 'edit') {
+    if (matchesCommand(lower, 'edit', lang)) {
       const permissions = s.userDetails?.permissions || {};
       
       if (permissions.canEditCost) {
         await setSession(from, { step: 'donation_edit_cost' });
-        return reply([
-          `Current cost: $${s.selectedProduct.unit_cost}`,
-          '',
-          'Enter new cost per unit (or type "skip" to keep current):',
-          '',
-          'Example: 2500.50'
-        ].join('\n'));
+        return reply(msg.editCostPrompt(s.selectedProduct.unit_cost));
       } else if (permissions.canEditWeight) {
         await setSession(from, { step: 'donation_edit_weight' });
-        return reply([
-          `Current weight: ${s.selectedProduct.unit_weight_kg} kg`,
-          '',
-          'Enter new weight per unit in kg (or type "skip" to keep current):',
-          '',
-          'Example: 0.5'
-        ].join('\n'));
+        return reply(msg.editWeightPrompt(s.selectedProduct.unit_weight_kg));
       } else if (permissions.canEditTax) {
         await setSession(from, { step: 'donation_edit_vat' });
-        return reply([
-          `Current VAT: ${s.selectedProduct.vat_percentage}%`,
-          '',
-          'Enter new VAT percentage (or type "skip" to keep current):',
-          '',
-          'Example: 19'
-        ].join('\n'));
+        return reply(msg.editVatPrompt(s.selectedProduct.vat_percentage));
       }
     }
     
-    return reply('Please type "ok" to continue or "edit" to modify values.');
+    return reply(msg.productReviewOkOrEdit);
   }
 
   /* ---------- Edit Cost ---------- */
   if (s.step === 'donation_edit_cost') {
     const permissions = s.userDetails?.permissions || {};
     
-    if (lower !== 'skip') {
+    if (!matchesCommand(lower, 'skip', lang)) {
       const cost = parseFloat(body);
       if (isNaN(cost) || cost < 0) {
-        return reply('Please enter a valid cost (e.g., 2500.50) or type "skip".');
+        return reply(msg.invalidCost);
       }
       s.selectedProduct.unit_cost = cost.toString();
       await setSession(from, { selectedProduct: s.selectedProduct });
@@ -788,29 +681,13 @@ app.post('/whatsapp', async (req, res) => {
     
     if (permissions.canEditWeight) {
       await setSession(from, { step: 'donation_edit_weight' });
-      return reply([
-        `Current weight: ${s.selectedProduct.unit_weight_kg} kg`,
-        '',
-        'Enter new weight per unit in kg (or type "skip" to keep current):',
-        '',
-        'Example: 0.5'
-      ].join('\n'));
+      return reply(msg.editWeightPrompt(s.selectedProduct.unit_weight_kg));
     } else if (permissions.canEditTax) {
       await setSession(from, { step: 'donation_edit_vat' });
-      return reply([
-        `Current VAT: ${s.selectedProduct.vat_percentage}%`,
-        '',
-        'Enter new VAT percentage (or type "skip" to keep current):',
-        '',
-        'Example: 19'
-      ].join('\n'));
+      return reply(msg.editVatPrompt(s.selectedProduct.vat_percentage));
     } else {
       await setSession(from, { step: 'donation_quantity' });
-      return reply([
-        'How many units would you like to donate?',
-        '',
-        '(Enter a number)'
-      ].join('\n'));
+      return reply(msg.quantityPromptSimple);
     }
   }
 
@@ -818,10 +695,10 @@ app.post('/whatsapp', async (req, res) => {
   if (s.step === 'donation_edit_weight') {
     const permissions = s.userDetails?.permissions || {};
     
-    if (lower !== 'skip') {
+    if (!matchesCommand(lower, 'skip', lang)) {
       const weight = parseFloat(body);
       if (isNaN(weight) || weight <= 0) {
-        return reply('Please enter a valid weight in kg (e.g., 0.5) or type "skip".');
+        return reply(msg.invalidWeight);
       }
       s.selectedProduct.unit_weight_kg = weight.toString();
       await setSession(from, { selectedProduct: s.selectedProduct });
@@ -829,40 +706,26 @@ app.post('/whatsapp', async (req, res) => {
     
     if (permissions.canEditTax) {
       await setSession(from, { step: 'donation_edit_vat' });
-      return reply([
-        `Current VAT: ${s.selectedProduct.vat_percentage}%`,
-        '',
-        'Enter new VAT percentage (or type "skip" to keep current):',
-        '',
-        'Example: 19'
-      ].join('\n'));
+      return reply(msg.editVatPrompt(s.selectedProduct.vat_percentage));
     } else {
       await setSession(from, { step: 'donation_quantity' });
-      return reply([
-        'How many units would you like to donate?',
-        '',
-        '(Enter a number)'
-      ].join('\n'));
+      return reply(msg.quantityPromptSimple);
     }
   }
 
   /* ---------- Edit VAT ---------- */
   if (s.step === 'donation_edit_vat') {
-    if (lower !== 'skip') {
+    if (!matchesCommand(lower, 'skip', lang)) {
       const vat = parseInt(body);
       if (isNaN(vat) || vat < 0 || vat > 100) {
-        return reply('Please enter a valid VAT percentage (0-100) or type "skip".');
+        return reply(msg.invalidVat);
       }
       s.selectedProduct.vat_percentage = vat.toString();
       await setSession(from, { selectedProduct: s.selectedProduct });
     }
     
     await setSession(from, { step: 'donation_quantity' });
-    return reply([
-      'How many units would you like to donate?',
-      '',
-      '(Enter a number)'
-    ].join('\n'));
+    return reply(msg.quantityPromptSimple);
   }
 
   /* ---------- Quantity ---------- */
@@ -870,7 +733,7 @@ app.post('/whatsapp', async (req, res) => {
     const quantity = parseInt(body);
     
     if (isNaN(quantity) || quantity < 1) {
-      return reply('Please enter a valid number of units (must be 1 or more).');
+      return reply(msg.invalidQuantity);
     }
     
     await setSession(from, { 
@@ -878,13 +741,7 @@ app.post('/whatsapp', async (req, res) => {
       step: 'donation_expiration_date'
     });
     
-    return reply([
-      `Quantity: ${quantity} units`,
-      '',
-      'What is the expiration date?',
-      '',
-      'Format: YYYY-MM-DD (e.g., 2025-12-31)'
-    ].join('\n'));
+    return reply(msg.expirationPrompt(quantity));
   }
 
   /* ---------- Expiration date ---------- */
@@ -892,22 +749,12 @@ app.post('/whatsapp', async (req, res) => {
     const datePattern = /^\d{4}-\d{2}-\d{2}$/;
     
     if (!datePattern.test(body)) {
-      return reply([
-        'Invalid date format.',
-        '',
-        'Please use YYYY-MM-DD format.',
-        'Example: 2025-12-31'
-      ].join('\n'));
+      return reply(msg.invalidDateFormat);
     }
     
     const date = new Date(body);
     if (isNaN(date.getTime())) {
-      return reply([
-        'Invalid date.',
-        '',
-        'Please enter a valid date in YYYY-MM-DD format.',
-        'Example: 2025-12-31'
-      ].join('\n'));
+      return reply(msg.invalidDate);
     }
     
     const donationItem = {
@@ -926,38 +773,28 @@ app.post('/whatsapp', async (req, res) => {
     
     const totalWeight = (donationItem.quantity * parseFloat(donationItem.product.unit_weight_kg)).toFixed(2);
     
-    return reply([
-      '✅ Product added to donation:',
-      '',
-      `${donationItem.product.name}`,
-      `Quantity: ${donationItem.quantity} units`,
-      `Weight: ${totalWeight} kg`,
-      `Expiration: ${donationItem.expirationDate}`,
-      '',
-      `Total products in donation: ${donationItems.length}`,
-      '',
-      'Type "add" to add another product.',
-      'Type "done" to review and confirm donation.'
-    ].join('\n'));
+    return reply(msg.productAdded(
+      donationItem.product.name,
+      donationItem.quantity,
+      totalWeight,
+      donationItem.expirationDate,
+      donationItems.length
+    ));
   }
 
   /* ---------- Add more products ---------- */
   if (s.step === 'donation_add_more') {
-    if (lower === 'add') {
+    if (matchesCommand(lower, 'add', lang)) {
       await setSession(from, { step: 'donation_product_search' });
-      return reply([
-        'What product would you like to add?',
-        '',
-        getProductSearchPrompt().split('\n')[2]
-      ].join('\n'));
+      return reply(msg.addAnotherProduct);
     }
     
-    if (lower === 'done') {
+    if (matchesCommand(lower, 'done', lang)) {
       await setSession(from, { step: 'donation_confirm' });
       
       const items = s.donationItems;
       const podName = s.userDetails.selectedPodName;
-      const donorName = s.selectedDonorName || s.userDetails?.donorInfo?.donorName || 'Your company';
+      const donorName = s.selectedDonorName || s.userDetails?.donorInfo?.donorName || (lang === 'es' ? 'Tu empresa' : 'Your company');
       
       let totalWeight = 0;
       let totalCost = 0;
@@ -968,50 +805,47 @@ app.post('/whatsapp', async (req, res) => {
         totalWeight += itemWeight;
         totalCost += itemCost;
         
+        const codeLabel = lang === 'es' ? 'Código' : 'Code';
+        const quantityLabel = lang === 'es' ? 'Cantidad' : 'Quantity';
+        const weightLabel = lang === 'es' ? 'Peso' : 'Weight';
+        const costLabel = lang === 'es' ? 'Costo' : 'Cost';
+        const expirationLabel = lang === 'es' ? 'Vencimiento' : 'Expiration';
+        
         return [
           `${index + 1}. ${item.product.name}`,
-          `   Code: ${item.product.odd_code}`,
-          `   Quantity: ${item.quantity} units`,
-          `   Weight: ${itemWeight.toFixed(2)} kg`,
-          `   Cost: $${itemCost.toFixed(2)}`,
-          `   Expiration: ${item.expirationDate}`
+          `   ${codeLabel}: ${item.product.odd_code}`,
+          `   ${quantityLabel}: ${item.quantity} ${lang === 'es' ? 'unidades' : 'units'}`,
+          `   ${weightLabel}: ${itemWeight.toFixed(2)} kg`,
+          `   ${costLabel}: $${itemCost.toFixed(2)}`,
+          `   ${expirationLabel}: ${item.expirationDate}`
         ].join('\n');
       }).join('\n\n');
       
-      return reply([
-        '=== REVIEW YOUR DONATION ===',
-        '',
-        `Donor: ${donorName}`,
-        `Donation Point: ${podName}`,
-        '',
-        '--- PRODUCTS ---',
+      return reply(msg.reviewDonation(
+        donorName,
+        podName,
         itemsList,
-        '',
-        `--- TOTALS ---`,
-        `Total Products: ${items.length}`,
-        `Total Weight: ${totalWeight.toFixed(2)} kg`,
-        `Total Cost: $${totalCost.toFixed(2)}`,
-        '',
-        'Type "confirm" to create this donation.',
-        'Type "cancel" to cancel.'
-      ].join('\n'));
+        items.length,
+        totalWeight.toFixed(2),
+        totalCost.toFixed(2)
+      ));
     }
     
-    return reply('Please type "add" to add another product, or "done" to review donation.');
+    return reply(msg.addMorePrompt);
   }
 
   /* ---------- Confirmation ---------- */
   if (s.step === 'donation_confirm') {
-    if (lower === 'cancel') {
+    if (matchesCommand(lower, 'cancel', lang)) {
       await setSession(from, { 
         step: 'authenticated',
         donationItems: []
       });
-      return reply('Donation cancelled. Type "menu" to see options.');
+      return reply(msg.donationCancelled);
     }
     
-    if (lower !== 'confirm') {
-      return reply('Please type "confirm" to create the donation, or "cancel" to cancel.');
+    if (!matchesCommand(lower, 'confirm', lang)) {
+      return reply(msg.confirmOrCancel);
     }
     
     try {
@@ -1068,14 +902,7 @@ app.post('/whatsapp', async (req, res) => {
           donationItems: []
         });
         
-        return reply([
-          '✅ Donation created successfully!',
-          '',
-          `Total Products: ${items.length}`,
-          `Total Weight: ${totalWeight.toFixed(2)} kg`,
-          '',
-          'Type "menu" to make another donation or see options.'
-        ].join('\n'));
+        return reply(msg.donationSuccess(items.length, totalWeight.toFixed(2)));
       } else {
         throw new Error('Donation creation failed: ' + JSON.stringify(donationResp.data));
       }
@@ -1087,19 +914,13 @@ app.post('/whatsapp', async (req, res) => {
         donationItems: []
       });
       
-      return reply([
-        '❌ Error creating donation.',
-        '',
-        'Please try again or contact support.',
-        '',
-        'Type "menu" to go back.'
-      ].join('\n'));
+      return reply(msg.donationError);
     }
   }
 
   /* ---------- Menu selections (at menu screen) ---------- */
   if (s.step === 'authenticated_at_menu') {
-    if (body === '1' || lower.includes('donation')) {
+    if (body === '1' || lower.includes('donation') || lower.includes('donación')) {
       
       if (s.userDetails?.donorInfo?.needsSelection && !s.selectedDonorCode) {
         await setSession(from, { step: 'select_donor' });
@@ -1107,49 +928,43 @@ app.post('/whatsapp', async (req, res) => {
         const donors = s.userDetails.donorInfo.donors;
         const donorList = formatDonorList(donors);
         
-        return reply([
-          'Which entity are you donating as?',
-          '',
-          donorList,
-          '',
-          'Reply with the number.'
-        ].join('\n'));
+        return reply(msg.selectDonor(donorList));
       }
       
       await setSession(from, { step: 'donation_product_search' });
       
       return reply([
-        `Donation point: ${s.userDetails.selectedPodName}`,
+        `${lang === 'es' ? 'Punto de donación' : 'Donation point'}: ${s.userDetails.selectedPodName}`,
         '',
-        getProductSearchPrompt()
+        msg.productSearchPrompt
       ].join('\n'));
     }
     
-    if (body === '2' || lower === 'logout') {
+    if (body === '2' || matchesCommand(lower, 'logout', lang)) {
       await clearSession(from);
       await setCooloff(from);
-      return reply('You have been logged out.\n' + welcomeText());
+      return reply(msg.logoutSuccess + '\n' + msg.welcome);
     }
     
-    return reply(getMainMenuText());
+    return reply(msg.mainMenu);
   }
 
   /* ---------- Authenticated fallback (not at menu) ---------- */
   if (s.step === 'authenticated') {
-    if (body === '1' || lower === 'menu') {
+    if (body === '1' || matchesCommand(lower, 'menu', lang)) {
       await setSession(from, { step: 'authenticated_at_menu' });
-      return reply(getMainMenuText());
+      return reply(msg.mainMenu);
     }
     
-    return reply('You are signed in. Type "menu" to see options, or "logout" to sign out.');
+    return reply(msg.typeMenuForOptions);
   }
 
   /* ---------- Idle fallback ---------- */
   if (s.step === 'idle') {
-    return reply(welcomeText());
+    return reply(msg.welcome);
   }
 
-  return reply(welcomeText());
+  return reply(msg.welcome);
 });
 
 /* -------------------- Health Check -------------------- */
@@ -1183,6 +998,7 @@ const server = app.listen(port, () => {
   console.log(`✅ WhatsApp bot listening on port ${port}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Health check: http://localhost:${port}/health`);
+  console.log(`🌐 Languages: English (en), Español (es)`);
 });
 
 /* -------------------- Graceful Shutdown -------------------- */
