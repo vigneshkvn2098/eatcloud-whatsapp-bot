@@ -96,7 +96,7 @@ const languages = {
     createProductNamePrompt: [
       'Enter the product name:',
       '',
-      'Example: ALPINA LECHE ENTERA 1L'
+      'Example: LECHE ENTERA 1L'
     ].join('\n'),
     createProductNameInvalid: 'Please enter a valid product name (minimum 3 characters).',
     createProductPrompt: (productName) => [
@@ -391,7 +391,7 @@ const languages = {
     createProductNamePrompt: [
       'Ingresa el nombre del producto:',
       '',
-      'Ejemplo: ALPINA LECHE ENTERA 1L'
+      'Ejemplo: LECHE ENTERA 1L'
     ].join('\n'),
     createProductNameInvalid: 'Por favor ingresa un nombre de producto válido (mínimo 3 caracteres).',
     createProductPrompt: (productName) => [
