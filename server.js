@@ -104,6 +104,55 @@ function isEmail(str) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str);
 }
 
+function generateProductCode(productName, codeCuaUser) {
+  const crypto = require('crypto');
+  
+  // 1. Sanitize the full name
+  const sanitized = productName
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, '')
+    .trim()
+    .replace(/\s+/g, '_');
+  
+  // 2. Smart truncation: Find and keep quantity
+  let readable;
+  if (sanitized.length <= 25) {
+    readable = sanitized;
+  } else {
+    // Look for quantity pattern anywhere in the name
+    const quantityMatch = sanitized.match(/(\d+\s*(ML|L|KG|G|GR|X|UNIDADES?))/i);
+    
+    if (quantityMatch) {
+      // Found quantity pattern (e.g., "200_GR", "500ML", "X1100")
+      const quantityPart = quantityMatch[0].replace(/\s+/g, '_');
+      
+      // Get everything before the quantity
+      const beforeQuantity = sanitized.substring(0, quantityMatch.index);
+      
+      // Truncate the prefix to fit within limit
+      const maxPrefixLength = 25 - quantityPart.length - 1;
+      const prefix = beforeQuantity.substring(0, maxPrefixLength).replace(/_+$/, '');
+      
+      readable = `${prefix}_${quantityPart}`;
+    } else {
+      // No quantity found, just truncate
+      readable = sanitized.substring(0, 25);
+    }
+  }
+  
+  // 3. Generate hash from FULL original name
+  const hash = crypto
+    .createHash('md5')
+    .update(productName.toUpperCase().trim())
+    .digest('hex')
+    .substring(0, 8);
+  
+  const odd_code = `${readable}_${hash}`;
+  const code = `${codeCuaUser}_${readable}_${hash}`;
+  
+  return { odd_code, code };
+}
+
 function calculateMatchScore(productName, searchTerm) {
   const name = productName.toLowerCase();
   const term = searchTerm.toLowerCase();
@@ -374,6 +423,39 @@ async function fetchUserDetails(email, token) {
   }
 }
 
+async function createProduct(token, codeCuaUser, productData) {
+  try {
+    console.log('Creating new product:', productData.name);
+    
+    // Wrap productData in a "data" array as required by API
+    const payload = {
+      data: [productData]
+    };
+    
+    console.log('API Payload:', JSON.stringify(payload, null, 2));
+    
+    const createResp = await axios.post(
+      `${process.env.EATCLOUD_BASE_URL}/crd/create/odds`,
+      payload,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000
+      }
+    );
+
+    if (!createResp.data.ok) {
+      throw new Error('Product creation failed');
+    }
+
+    console.log('Product created successfully:', productData.odd_code);
+    return { success: true, data: createResp.data };
+    
+  } catch (err) {
+    console.error('Error creating product:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
 /* -------------------- Twilio Functions -------------------- */
 
 function parseInteractiveReply(req) {
@@ -553,6 +635,11 @@ app.post('/whatsapp', async (req, res) => {
       }
       
       if (result.matches.length === 0) {
+        // No products found - offer to create new product
+        await setSession(from, { 
+          step: 'donation_product_not_found',
+          searchedProductName: body.trim() // Keep original casing
+        });
         return reply(msg.productsNotFound(body));
       }
       
@@ -573,8 +660,144 @@ app.post('/whatsapp', async (req, res) => {
     }
   }
 
+  /* ---------- Product not found - create or search again ---------- */
+  if (s.step === 'donation_product_not_found') {
+    if (body === '1') {
+      // Search again
+      await setSession(from, { step: 'donation_product_search' });
+      return reply(msg.productSearchPrompt);
+    }
+    
+    if (body === '2') {
+      // Create new product - ask for name
+      await setSession(from, { step: 'create_product_name' });
+      return reply(msg.createProductNamePrompt);
+    }
+    
+    return reply(msg.productsNotFound(s.searchedProductName));
+  }
+
+  /* ---------- Create product - collect name ---------- */
+  if (s.step === 'create_product_name') {
+    const productName = body.trim();
+    
+    if (productName.length < 3) {
+      return reply(msg.createProductNameInvalid);
+    }
+    
+    await setSession(from, { 
+      newProductName: productName,
+      step: 'create_product_cost'
+    });
+    
+    return reply(msg.createProductPrompt(productName));
+  }
+
+  /* ---------- Create product - collect cost ---------- */
+  if (s.step === 'create_product_cost') {
+    const cost = parseFloat(body);
+    
+    if (isNaN(cost) || cost < 0) {
+      return reply(msg.createProductCostInvalid);
+    }
+    
+    await setSession(from, { 
+      newProductCost: cost,
+      step: 'create_product_weight'
+    });
+    
+    return reply(msg.createProductWeightPrompt);
+  }
+
+  /* ---------- Create product - collect weight ---------- */
+  if (s.step === 'create_product_weight') {
+    const weight = parseFloat(body);
+    
+    if (isNaN(weight) || weight <= 0) {
+      return reply(msg.createProductWeightInvalid);
+    }
+    
+    await setSession(from, { 
+      newProductWeight: weight,
+      step: 'create_product_vat'
+    });
+    
+    return reply(msg.createProductVatPrompt);
+  }
+
+  /* ---------- Create product - collect VAT and create ---------- */
+  if (s.step === 'create_product_vat') {
+    const vat = parseInt(body);
+    
+    if (isNaN(vat) || vat < 0 || vat > 100) {
+      return reply(msg.createProductVatInvalid);
+    }
+    
+    try {
+      // Generate product codes using the user-provided product name
+      const { odd_code, code } = generateProductCode(
+        s.newProductName, 
+        s.userDetails.codeCuaUser
+      );
+      
+      console.log('Generated codes:', { odd_code, code });
+      
+      // Prepare product data for API
+      const productData = {
+        code: code,
+        name: s.newProductName,
+        odd_code: odd_code,
+        odd_unit_cost: s.newProductCost,
+        odd_unit_weight_kg: s.newProductWeight,
+        odd_vat_percentage: vat,
+        code_cua_user: s.userDetails.codeCuaUser
+      };
+      
+      console.log('Creating product with data:', productData);
+      
+      // Create product via API
+      const result = await createProduct(s.token, s.userDetails.codeCuaUser, productData);
+      
+      if (!result.success) {
+        return reply(msg.createProductError);
+      }
+      
+      // Product created successfully - now use it for donation
+      const createdProduct = {
+        id: odd_code, // Use odd_code as ID
+        code: code,
+        odd_code: odd_code,
+        name: s.newProductName,
+        unit_cost: s.newProductCost.toString(),
+        unit_weight_kg: s.newProductWeight.toString(),
+        vat_percentage: vat.toString()
+      };
+      
+      await setSession(from, { 
+        selectedProduct: createdProduct,
+        step: 'donation_quantity'
+      });
+      
+      return reply([
+        msg.createProductSuccess(s.newProductName),
+        '',
+        msg.quantityPrompt(s.newProductName)
+      ].join('\n'));
+      
+    } catch (err) {
+      console.error('Error in product creation flow:', err.message);
+      return reply(msg.createProductError);
+    }
+  }
+
   /* ---------- Product selection ---------- */
   if (s.step === 'donation_product_select') {
+    // Check if user wants to create new product (typed "0")
+    if (body === '0') {
+      await setSession(from, { step: 'create_product_name' });
+      return reply(msg.createProductNamePrompt);
+    }
+    
     if (isNaN(parseInt(body))) {
       await setSession(from, { step: 'donation_product_search' });
       const searchTerm = body.toLowerCase().trim();
@@ -593,6 +816,10 @@ app.post('/whatsapp', async (req, res) => {
         }
         
         if (result.matches.length === 0) {
+          await setSession(from, { 
+            step: 'donation_product_not_found',
+            searchedProductName: body.trim()
+          });
           return reply(msg.productsNotFound(body));
         }
         
@@ -805,7 +1032,6 @@ app.post('/whatsapp', async (req, res) => {
         totalWeight += itemWeight;
         totalCost += itemCost;
         
-        const codeLabel = lang === 'es' ? 'Código' : 'Code';
         const quantityLabel = lang === 'es' ? 'Cantidad' : 'Quantity';
         const weightLabel = lang === 'es' ? 'Peso' : 'Weight';
         const costLabel = lang === 'es' ? 'Costo' : 'Cost';
@@ -813,7 +1039,6 @@ app.post('/whatsapp', async (req, res) => {
         
         return [
           `${index + 1}. ${item.product.name}`,
-          `   ${codeLabel}: ${item.product.odd_code}`,
           `   ${quantityLabel}: ${item.quantity} ${lang === 'es' ? 'unidades' : 'units'}`,
           `   ${weightLabel}: ${itemWeight.toFixed(2)} kg`,
           `   ${costLabel}: $${itemCost.toFixed(2)}`,
