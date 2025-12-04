@@ -70,20 +70,20 @@ const languages = {
     productsNotFound: (term) => [
       `No products found matching "${term}".`,
       '',
-      'Try:',
-      '• Using different keywords',
-      '• Checking spelling',
-      '• Using shorter search terms',
+      'Options:',
+      '1. Try a different search term',
+      '2. Add new product',
       '',
-      'Or type "menu" to go back.'
+      'Reply with 1 or 2'
     ].join('\n'),
     productsFound: (count, list) => [
       `Found ${count} matching product${count > 1 ? 's' : ''}:`,
       '',
       list,
       '',
-      'Reply with the number to select.',
-      'Or type a new search term to search again.'
+      'Reply with the number to select,',
+      'Type a new search term to search again,',
+      'Or type "0" to create a new product.'
     ].join('\n'),
     searchError: [
       'Error searching for products. Please try again.',
@@ -91,6 +91,48 @@ const languages = {
       'Type "menu" to go back or try another search term.'
     ].join('\n'),
     invalidProductSelection: (max) => `Please enter a number between 1 and ${max}, or type a new search term.`,
+    
+    // Create new product
+    createProductNamePrompt: [
+      'Enter the product name:',
+      '',
+      'Example: ALPINA LECHE ENTERA 1L'
+    ].join('\n'),
+    createProductNameInvalid: 'Please enter a valid product name (minimum 3 characters).',
+    createProductPrompt: (productName) => [
+      `Creating new product: "${productName}"`,
+      '',
+      'Enter the unit cost (price per unit):',
+      '',
+      'Example: 2500.50'
+    ].join('\n'),
+    createProductCostInvalid: 'Please enter a valid cost (e.g., 2500.50).',
+    createProductWeightPrompt: [
+      'Enter the unit weight in kilograms:',
+      '',
+      'Example: 0.5'
+    ].join('\n'),
+    createProductWeightInvalid: 'Please enter a valid weight in kg (e.g., 0.5).',
+    createProductVatPrompt: [
+      'Enter the VAT percentage:',
+      '',
+      'Example: 19'
+    ].join('\n'),
+    createProductVatInvalid: 'Please enter a valid VAT percentage (0-100).',
+    createProductSuccess: (productName) => [
+      `✅ Product created successfully!`,
+      '',
+      `Name: ${productName}`,
+      '',
+      'Now continuing with donation...'
+    ].join('\n'),
+    createProductError: [
+      '❌ Error creating product.',
+      '',
+      'Please try again or search for a different product.',
+      '',
+      'Type "menu" to go back.'
+    ].join('\n'),
     
     // Product review
     productReview: (productName, details, canEdit) => {
@@ -323,20 +365,20 @@ const languages = {
     productsNotFound: (term) => [
       `No se encontraron productos que coincidan con "${term}".`,
       '',
-      'Intenta:',
-      '• Usar diferentes palabras clave',
-      '• Verificar la ortografía',
-      '• Usar términos de búsqueda más cortos',
+      'Opciones:',
+      '1. Intentar con otro término de búsqueda',
+      '2. Agregar nuevo producto',
       '',
-      'O escribe "menu" para volver.'
+      'Responde con 1 o 2'
     ].join('\n'),
     productsFound: (count, list) => [
       `Se encontraron ${count} producto${count > 1 ? 's' : ''} coincidente${count > 1 ? 's' : ''}:`,
       '',
       list,
       '',
-      'Responde con el número para seleccionar.',
-      'O escribe un nuevo término de búsqueda para buscar de nuevo.'
+      'Responde con el número para seleccionar,',
+      'Escribe un nuevo término de búsqueda para buscar de nuevo,',
+      'O escribe "0" para crear un nuevo producto.'
     ].join('\n'),
     searchError: [
       'Error al buscar productos. Por favor intenta de nuevo.',
@@ -344,6 +386,48 @@ const languages = {
       'Escribe "menu" para volver o prueba con otro término de búsqueda.'
     ].join('\n'),
     invalidProductSelection: (max) => `Por favor ingresa un número entre 1 y ${max}, o escribe un nuevo término de búsqueda.`,
+    
+    // Crear nuevo producto
+    createProductNamePrompt: [
+      'Ingresa el nombre del producto:',
+      '',
+      'Ejemplo: ALPINA LECHE ENTERA 1L'
+    ].join('\n'),
+    createProductNameInvalid: 'Por favor ingresa un nombre de producto válido (mínimo 3 caracteres).',
+    createProductPrompt: (productName) => [
+      `Creando nuevo producto: "${productName}"`,
+      '',
+      'Ingresa el costo por unidad (precio por unidad):',
+      '',
+      'Ejemplo: 2500.50'
+    ].join('\n'),
+    createProductCostInvalid: 'Por favor ingresa un costo válido (ej: 2500.50).',
+    createProductWeightPrompt: [
+      'Ingresa el peso por unidad en kilogramos:',
+      '',
+      'Ejemplo: 0.5'
+    ].join('\n'),
+    createProductWeightInvalid: 'Por favor ingresa un peso válido en kg (ej: 0.5).',
+    createProductVatPrompt: [
+      'Ingresa el porcentaje de IVA:',
+      '',
+      'Ejemplo: 19'
+    ].join('\n'),
+    createProductVatInvalid: 'Por favor ingresa un porcentaje de IVA válido (0-100).',
+    createProductSuccess: (productName) => [
+      `✅ ¡Producto creado exitosamente!`,
+      '',
+      `Nombre: ${productName}`,
+      '',
+      'Ahora continuando con la donación...'
+    ].join('\n'),
+    createProductError: [
+      '❌ Error al crear el producto.',
+      '',
+      'Por favor intenta de nuevo o busca un producto diferente.',
+      '',
+      'Escribe "menu" para volver.'
+    ].join('\n'),
     
     // Revisión de producto
     productReview: (productName, details, canEdit) => {
